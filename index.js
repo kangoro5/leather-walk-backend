@@ -36,8 +36,7 @@ const upload = multer({
 // --- Connect to Database ---
 // Your dbConfig.js should export a function to connect, or this logic should be here.
 // Example: Assuming db.js exports a function `connectDB`
-const connectDB = require('./database/db'); // Assuming db.js exports a function
-connectDB(); // Call the function to connect to the database
+require('./database/db'); // This will connect automatically
 
 // Or, if your db.js simply connects on require, ensure it's required AFTER dotenv.config()
 // require('./database/db'); // If this connects automatically
@@ -49,7 +48,7 @@ connectDB(); // Call the function to connect to the database
 require('./models/UserModel');    // Just require them to ensure they are compiled
 require('./models/ProductModel'); // This will compile the Product model
 require('./models/CartModel');    // This will compile the Cart model (and reference Product)
-
+require('./models/AdminModel');
 // --- Express Middleware ---
 const cors = require('cors');
 app.use(cors()); // CORS should be early
@@ -63,12 +62,14 @@ app.use(express.urlencoded({ extended: true }));
 const userRoutes = require('./routes/userRoute');
 const productRoutes = require('./routes/productRoute');
 const cartRoutes = require('./routes/cartRoute');
-
-
+const orderRoutes = require('./routes/ordersRoute');
+const adminRoutes = require('./routes/adminRoute');
 // --- Mount Routes ---
 app.use('/api', userRoutes);
 app.use('/api', productRoutes); // Corrected line 71
-app.use('/api', cartRoutes);
+app.use('/api/carts', cartRoutes); // <-- Add '/carts' here
+app.use('/api/orders', orderRoutes);
+app.use('/api/admin', adminRoutes);
 
 
 // --- Error Handling Middleware ---
@@ -91,6 +92,11 @@ app.use((err, req, res, next) => {
 // --- Basic Root Route ---
 app.get('/', (req, res) => {
     res.send('Welcome to the Leather walk online shop API');
+});
+
+// --- Catch-all 404 JSON handler ---
+app.use((req, res) => {
+    res.status(404).json({ error: 'Not found' });
 });
 
 const PORT = process.env.PORT || 8000;

@@ -1,18 +1,18 @@
-// Example: models/Cart.js
+// models/Cart.js
 const mongoose = require('mongoose');
 
 const cartSchema = new mongoose.Schema({
     user: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'User', // Reference to your User model
+        ref: 'User',
         required: true,
-        unique: true // A user should only have one cart
+        unique: true // Ensure one cart per user
     },
     products: [
         {
             productId: {
                 type: mongoose.Schema.Types.ObjectId,
-                ref: 'Product', // Reference to your Product model
+                ref: 'Product',
                 required: true
             },
             quantity: {
@@ -20,7 +20,7 @@ const cartSchema = new mongoose.Schema({
                 required: true,
                 min: 1
             },
-            priceAtTimeOfAddition: { // Store the price when added to cart
+            priceAtTimeOfAddition: {
                 type: Number,
                 required: true
             }
@@ -29,15 +29,3 @@ const cartSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 module.exports = mongoose.model('Cart', cartSchema);
-
-// Example: models/Product.js (relevant fields)
-const productSchema = new mongoose.Schema({
-    name: { type: String, required: true },
-    price: { type: Number, required: true, min: 0 },
-    quantity: { type: Number, required: true, min: 0 }, // Stock quantity
-    imageUrl: { type: String },
-    size: { type: String },
-    color: { type: String },
-    // ... other fields
-});
-module.exports = mongoose.model('Product', productSchema);

@@ -2,56 +2,40 @@
 const express = require('express');
 const router = express.Router();
 const Cart = require('../models/CartModel');
-const User = require('../models/UserModel'); // Ensure this path is correct
-const Product = require('../models/ProductModel'); // Ensure this path is correct
-const mongoose = require('mongoose'); // Import mongoose to use isValidObjectId
-
-// IMPORTANT: Assume you have an authentication middleware that attaches req.user._id
-// For simplicity, these routes use req.params.userId. In a real app,
-// consider using req.user._id for logged-in users to prevent one user from manipulating another's cart.
-// For now, if you're using req.params.userId, ensure your frontend is passing the correct _id.
+const Product = require('../models/ProductModel');
+const mongoose = require('mongoose');
 
 // Helper function to validate products array for PUT/POST requests
-// It validates product existence, quantity, and ensures priceAtTimeOfAddition is present.
 async function validateCartItems(productsData) {
     const validatedProducts = [];
-
     for (const item of productsData) {
         if (!item.productId) {
             throw { status: 400, message: 'Product ID is required for all cart items.' };
         }
-        // Validate product ID format
         if (!mongoose.Types.ObjectId.isValid(item.productId)) {
             throw { status: 400, message: `Invalid Product ID format for ${item.productId}.` };
         }
-        
-        if (typeof item.quantity !== 'number' || item.quantity < 0) { // Allow 0 for removal via PUT
+        if (typeof item.quantity !== 'number' || item.quantity < 0) {
             throw { status: 400, message: `Quantity for product ID ${item.productId} must be a number and at least 0.` };
         }
         if (typeof item.priceAtTimeOfAddition !== 'number' || item.priceAtTimeOfAddition < 0) {
             throw { status: 400, message: `Price at time of addition is required and must be a non-negative number for product ID ${item.productId}.` };
         }
-
-        // Fetch product to validate against current stock and get actual price
         const product = await Product.findById(item.productId);
         if (!product) {
             throw { status: 404, message: `Product with ID ${item.productId} not found.` };
         }
-
-        // Only check stock if quantity is greater than 0
         if (item.quantity > 0 && item.quantity > product.quantity) {
             throw { status: 400, message: `Insufficient stock for product '${product.name}'. Available: ${product.quantity}, Requested: ${item.quantity}.` };
         }
-
         validatedProducts.push({
-            productId: product._id, // Ensure it's the actual ID from DB
+            productId: product._id,
             quantity: item.quantity,
-            priceAtTimeOfAddition: item.priceAtTimeOfAddition // Use the price provided by the frontend for this field
+            priceAtTimeOfAddition: item.priceAtTimeOfAddition
         });
     }
     return validatedProducts;
 }
-
 
 /**
  * @desc Get user's cart
@@ -61,26 +45,19 @@ async function validateCartItems(productsData) {
 router.get('/:userId', async (req, res) => {
     try {
         const { userId } = req.params;
-
-        // Basic validation for userId format
         if (!mongoose.Types.ObjectId.isValid(userId)) {
             return res.status(400).json({ message: 'Invalid User ID format.' });
         }
-
-        // Find the cart and populate product details
-        const cart = await Cart.findOne({ user: userId }) // Ensure your CartModel has a 'user' field that stores the userId
+        const cart = await Cart.findOne({ user: userId })
             .populate({
-                path: 'products.productId', // Path to the field you want to populate
-                model: 'Product',           // The model to use for population
-                select: 'name price imageUrl quantity size color' // Select specific fields from the Product
+                path: 'products.productId',
+                model: 'Product',
+                select: 'name price imageUrl quantity size color'
             })
             .exec();
 
         if (!cart) {
-            // If no cart found, return an empty cart object for consistency on the frontend
-            // You might want to consider if you want to create a cart upon first fetch if it doesn't exist.
-            // For now, returning an empty array is common.
-            return res.status(200).json({ userId: userId, products: [] }); // Omit createdAt/updatedAt for non-existent cart
+            return res.status(200).json({ user: userId, products: [] });
         }
         res.status(200).json(cart);
     } catch (error) {
@@ -95,16 +72,15 @@ router.get('/:userId', async (req, res) => {
  * @route POST /api/carts/:userId/add
  * @access Public (or Private with authentication)
  * @body { productId: string, quantity: number }
- * This is typically used when a user clicks "Add to Cart" on a product detail/listing page.
  */
 router.post('/:userId/add', async (req, res) => {
     try {
         const { userId } = req.params;
         const { productId, quantity } = req.body;
 
-        // Input validation
-        if (!mongoose.Types.ObjectId.isValid(userId)) {
-            return res.status(400).json({ message: 'Invalid User ID format.' });
+        // 1. Strict validation to prevent userId: null errors
+        if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+            return res.status(400).json({ message: 'Valid User ID is required.' });
         }
         if (!productId || !mongoose.Types.ObjectId.isValid(productId)) {
             return res.status(400).json({ message: 'Valid Product ID is required.' });
@@ -113,69 +89,57 @@ router.post('/:userId/add', async (req, res) => {
             return res.status(400).json({ message: 'Quantity must be a positive number (at least 1).' });
         }
 
-        // 1. Find the product to get its current price and stock
+        // 2. Find the product to get its price and check stock
         const product = await Product.findById(productId);
         if (!product) {
             return res.status(404).json({ message: 'Product not found.' });
         }
 
-        // 2. Find or create the user's cart
-        // Ensure your CartModel has a 'user' field that stores the userId
-        let cart = await Cart.findOne({ user: userId }); 
+        // 3. Find the cart to get the current quantity, if any
+        const cart = await Cart.findOne({ user: userId });
+        let newQuantity = quantity;
 
-        if (!cart) {
-            // If no cart exists, create a new one
-            cart = new Cart({ user: userId, products: [] }); // Initialize with userId
+        if (cart) {
+            const existingItem = cart.products.find(p => p.productId.toString() === productId);
+            if (existingItem) {
+                newQuantity += existingItem.quantity;
+            }
         }
+        
+        // 4. Check for sufficient stock based on the new total quantity
+        if (product.quantity < newQuantity) {
+            return res.status(400).json({ message: `Insufficient stock for ${product.name}. Available: ${product.quantity}, Requested: ${newQuantity}.` });
+        }
+        
+        // 5. Use findOneAndUpdate with $set and $push/arrayFilters to handle all cases
+        // The core logic is here to prevent duplicate carts.
+        const priceAtTimeOfAddition = product.price;
 
-        // 3. Check if product already exists in cart
-        const existingItemIndex = cart.products.findIndex(
-            item => item.productId.toString() === productId
+        // Try to find the cart and update the quantity of an existing product
+        let updatedCart = await Cart.findOneAndUpdate(
+            { user: userId, 'products.productId': productId },
+            { $inc: { 'products.$.quantity': quantity }, $set: { 'products.$.priceAtTimeOfAddition': priceAtTimeOfAddition } },
+            { new: true, runValidators: true }
         );
 
-        if (existingItemIndex > -1) {
-            // Product exists, update quantity
-            const currentCartQuantity = cart.products[existingItemIndex].quantity;
-            const newTotalQuantity = currentCartQuantity + quantity;
-
-            if (product.quantity < newTotalQuantity) {
-                return res.status(400).json({ 
-                    message: `Adding ${quantity} units exceeds available stock for ${product.name}. Current stock: ${product.quantity}. You currently have ${currentCartQuantity} in your cart.` 
-                });
-            }
-
-            cart.products[existingItemIndex].quantity = newTotalQuantity;
-            // It's a good practice to update priceAtTimeOfAddition here as well if the price changes over time
-            cart.products[existingItemIndex].priceAtTimeOfAddition = product.price; 
-        } else {
-            // Product does not exist, add as new item
-            if (product.quantity < quantity) {
-                return res.status(400).json({ message: `Insufficient stock for ${product.name}. Available: ${product.quantity}` });
-            }
-            cart.products.push({
-                productId: productId,
-                quantity: quantity,
-                priceAtTimeOfAddition: product.price // Use the product's current price
-            });
+        if (!updatedCart) {
+            // If the product wasn't found in the cart (or the cart didn't exist),
+            // then we push a new product to the products array.
+            updatedCart = await Cart.findOneAndUpdate(
+                { user: userId },
+                { $push: { products: { productId, quantity, priceAtTimeOfAddition } } },
+                { new: true, upsert: true, runValidators: true } // upsert: true creates the cart if it doesn't exist
+            );
         }
 
-        const updatedCart = await cart.save();
-
-        // Populate the product details before sending response to frontend
-        const populatedCart = await Cart.findById(updatedCart._id)
-            .populate({
-                path: 'products.productId',
-                model: 'Product',
-                select: 'name price imageUrl quantity size color'
-            });
+        // 6. Populate the product details and send the response
+        const populatedCart = await updatedCart
+            .populate('products.productId', 'name price imageUrl quantity size color');
 
         res.status(200).json(populatedCart);
+
     } catch (error) {
         console.error("Error adding item to cart:", error);
-        // Catch and respond to specific errors from helper function or Mongoose
-        if (error.status && error.message) {
-            return res.status(error.status).json({ message: error.message });
-        }
         res.status(500).json({ message: 'Failed to add item to cart.', error: error.message });
     }
 });
@@ -186,37 +150,28 @@ router.post('/:userId/add', async (req, res) => {
  * @route PUT /api/carts/:userId
  * @access Public (or Private with authentication)
  * @body { products: [{ productId: string, quantity: number, priceAtTimeOfAddition: number }] }
- * This route is intended for the payload sent by your frontend's `updateCartOnBackend`
- * (e.g., after quantity changes or item removals on the cart page).
  */
 router.put('/:userId', async (req, res) => {
+    const { userId } = req.params;
+    const { products } = req.body;
+
+    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+        return res.status(400).json({ message: 'User ID is required and must be valid.' });
+    }
+    if (!Array.isArray(products)) {
+        return res.status(400).json({ message: 'Products must be an array.' });
+    }
+
     try {
-        const { userId } = req.params;
-        const { products } = req.body;
-
-        if (!mongoose.Types.ObjectId.isValid(userId)) {
-            return res.status(400).json({ message: 'Invalid User ID format.' });
-        }
-
-        if (!Array.isArray(products)) {
-            return res.status(400).json({ message: 'Products must be an array.' });
-        }
-
-        // Validate incoming products array using the helper
         const validatedProducts = await validateCartItems(products);
-
-        // Filter out items with quantity 0, as they are considered "removed"
         const productsToSave = validatedProducts.filter(item => item.quantity > 0);
 
-        // Use findOneAndUpdate with upsert:true to create if cart doesn't exist
-        // Ensure your CartModel has a 'user' field that stores the userId
         let cart = await Cart.findOneAndUpdate(
-            { user: userId }, 
-            { $set: { products: productsToSave } }, // Replace the entire products array
-            { new: true, upsert: true, runValidators: true } // new: returns updated doc, upsert: creates if not exists, runValidators: validates updates
+            { user: userId },
+            { $set: { products: productsToSave } },
+            { new: true, upsert: true, runValidators: true }
         );
 
-        // Populate the product details before sending response
         cart = await Cart.findById(cart._id)
             .populate({
                 path: 'products.productId',
@@ -227,11 +182,8 @@ router.put('/:userId', async (req, res) => {
         res.status(200).json(cart);
     } catch (error) {
         console.error("Error updating cart items:", error);
-        if (error.status && error.message) { // Handle errors from validateCartItems helper
+        if (error.status && error.message) {
             return res.status(error.status).json({ message: error.message });
-        }
-        if (error.name === 'ValidationError') { // Mongoose validation errors
-            return res.status(400).json({ message: error.message, errors: error.errors });
         }
         res.status(500).json({ message: 'Failed to update cart items.', error: error.message });
     }
@@ -246,18 +198,13 @@ router.put('/:userId', async (req, res) => {
 router.delete('/:userId', async (req, res) => {
     try {
         const { userId } = req.params;
-
         if (!mongoose.Types.ObjectId.isValid(userId)) {
             return res.status(400).json({ message: 'Invalid User ID format.' });
         }
-
-        // Ensure your CartModel has a 'user' field that stores the userId
         const cart = await Cart.findOneAndDelete({ user: userId });
-
         if (!cart) {
             return res.status(404).json({ message: 'Cart not found for this user.' });
         }
-
         res.status(200).json({ message: 'Cart deleted successfully.' });
     } catch (error) {
         console.error("Error clearing cart:", error);
